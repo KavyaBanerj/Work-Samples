@@ -1,0 +1,367 @@
+---
+title: "Bioinformatician NGS Technical Interview"
+author: "Kavya Banerjee"
+date: "2024-11-02`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Task #1: Intersecting ChIP-seq peaks with enhancers
+
+You are working in the cell line K562 for which you have a set of annotated enhancers and ChIP-seq peaks for the transcription factors EP300 and CTCF. You are tasked with performing the following comparisons:
+
+Available data:
+K562 enhancers
+EP300 ChIP-seq peaks
+CTCF ChIP-seq peaks
+
+Tasks:
+```{r}
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(reshape2)
+library(stringr)
+library(tibble)
+library(viridis)
+library(ggrepel)
+library(here)
+
+dir_path <- file.path("~/Desktop/bioinformatician_umass_assessment_kavya_banerjee/data") # change it as per your directory
+
+gz_files <- list.files(path = dir_path, pattern = ".bed.gz$", full.names = TRUE)
+
+# file to unzip
+decompress_file <- function(gz_path) {
+  command <- paste0("gunzip -dk ", gz_path)
+  system(command)
+}
+
+purrr::map(gz_files, decompress_file)
+```
+Based on a visual inspection of the bed files, they follow the optional BED extensions. https://genome.ucsc.edu/FAQ/FAQformat.html#format1.
+A discussion on BED files and indexing 
+https://divingintogeneticsandgenomics.com/post/most-common-mistake-for-bioinformatics/  
+Here, fetching the bed files:
+```{r}
+library(GenomicRanges)
+library(rtracklayer)
+library(plyranges)
+library(data.table)
+
+k562_enhancers_df <- fread(file.path(dir_path, "K562-Enhancers.bed"), 
+                        select = 1:11, 
+                           col.names = c("chr", "start", "end", "name", "score", 
+                                         "strand", "thickStart", "thickEnd", 
+                                         "itemRgb", "annotation", "classification")) %>% 
+  mutate(start = start+1)
+
+k562_enhancers <- makeGRangesFromDataFrame(k562_enhancers_df, 
+                                           seqnames.field = "chr", 
+                                           start.field = "start", 
+                                           end.field = "end", 
+                                           keep.extra.columns = TRUE)
+
+ep300_peaks_df <- fread(file.path(dir_path, "ENCFF433PKW.bed"), 
+                        select = 1:3, 
+                           col.names = c("chr", "start", "end")) %>% 
+  mutate(start = start+1)
+
+ep300_peaks <- makeGRangesFromDataFrame(ep300_peaks_df, 
+                                        seqnames.field = "chr", 
+                                        start.field = "start", 
+                                        end.field = "end")
+
+ctcf_peaks_df <- fread(file.path(dir_path, "ENCFF769AUF.bed"), 
+                    select = 1:3, 
+                           col.names = c("chr", "start", "end")
+                    ) %>% 
+  mutate(start = start+1)
+
+ctcf_peaks <- makeGRangesFromDataFrame(ctcf_peaks_df, 
+                                        seqnames.field = "chr", 
+                                        start.field = "start", 
+                                        end.field = "end")
+```
+
+1. How many EP300 peaks overlap enhancers? What percentage of EP300 peaks overlap enhancers?
+```{r}
+peaks_enhancer_overlaps <- findOverlaps(ep300_peaks, k562_enhancers, maxgap = -1L, minoverlap = 0L)
+overlapping_peaks <- length(unique(queryHits(peaks_enhancer_overlaps)))
+pct_overlapping_peaks <- overlapping_peaks / length(ep300_peaks) * 100
+
+cat("Num. (percentage) of EP300 peaks overlapping enhancers:", overlapping_peaks, "(", pct_overlapping_peaks, "%)")
+```
+
+2. How many enhancers overlap EP300 peaks? What percentage of enhancers overlap EP300 peaks?
+
+```{r}
+enhancer_peaks_overlaps <- findOverlaps(k562_enhancers, ep300_peaks, maxgap=-1L, minoverlap=0L,)
+overlapping_enhancers <- length(unique(queryHits(enhancer_peaks_overlaps)))
+pct_overlapping_enhancers <- overlapping_enhancers / length(k562_enhancers) * 100 
+
+cat("Num. (percentage) of K562 enhancers overlapping EP300 peaks:", overlapping_enhancers, "(",  pct_overlapping_enhancers, "%)")
+```
+
+3. How many CTCF peaks overlap enhancers? What percentage of CTCF peaks overlap enhancers?
+```{r}
+ctcf_peaks_enhancer_overlaps <- findOverlaps(ctcf_peaks, k562_enhancers, maxgap = -1L, minoverlap = 0L)
+ctcf_overlapping_peaks <- length(unique(queryHits(ctcf_peaks_enhancer_overlaps)))
+pct_ctcf_overlapping_peaks <- ctcf_overlapping_peaks / length(ctcf_peaks) * 100
+
+cat("Num. (percentage) of CTCF peaks overlapping enhancers:", ctcf_overlapping_peaks, "(", pct_ctcf_overlapping_peaks, "%)")
+```
+
+4. How many enhancers overlap CTCF peaks? What percentage of enhancers overlap CTCF peaks?
+```{r}
+enhancer_ctcf_peaks_overlaps <- findOverlaps(k562_enhancers, ctcf_peaks, maxgap = -1L, minoverlap = 0L)
+overlapping_enhancers_ctcf <- length(unique(queryHits(enhancer_ctcf_peaks_overlaps)))
+pct_overlapping_enhancers_ctcf <- overlapping_enhancers_ctcf / length(k562_enhancers) * 100
+
+cat("Num. (percentage) of K562 enhancers overlapping CTCF peaks:", overlapping_enhancers_ctcf, "(", pct_overlapping_enhancers_ctcf, "%)")
+```
+5. Of the enhancers that overlapped the ChIP-seq peaks, how many overlap both EP300 and CTCF? Make a Venn Diagram to illustrate this overlap.
+
+```{r}
+ep300_enhancers <- subjectHits(enhancer_peaks_overlaps) %>% unique()
+ctcf_enhancers <-  subjectHits(enhancer_ctcf_peaks_overlaps) %>% unique()
+ep300_ctcf_enhancers_overlap <- intersect(ep300_enhancers, ctcf_enhancers)
+cat("Num. of enhancers overlapping both EP300 and CTCF peaks:", length(ep300_ctcf_enhancers_overlap))
+```
+
+```{r}
+library(ggVennDiagram)
+
+enhancer_overlap_list <- list(
+  `EP300` = ep300_enhancers,
+  `CTCF` = ctcf_enhancers
+)
+
+venn_plot <- ggVennDiagram(enhancer_overlap_list, label_alpha = 0) +
+  scale_fill_gradient(low = "lightblue", high = "red") +
+  labs(title = "Venn Diagram of Enhancer Overlap between EP300 and CTCF") +
+  theme(
+    plot.title = element_text(size = 10),
+    text = element_text(size = 7),
+  ) +
+  scale_x_continuous(expand = expansion(mult = .2)) +
+  scale_color_manual(values = c("black", "black", "black"), guide = FALSE)
+
+# Display the plot
+print(venn_plot)
+```
+
+# Task 2: Sample swaps
+
+You are working with RNA-seq data from four tissues from two different donors. Your labmate has informed you that the donor labs on two of the samples have been swapped, but does not remember for which tissues. You are tasked with determining which samples have been swapped.
+
+
+Tasks:
+1. Identify which tissues have swapped donors.
+2. Attach your code for determining the sample swap.
+3. Write a short paragraph detailing how you came to this decision.
+
+```{r}
+
+# creating a sample metadata spec sheet
+sample_metadata <- tibble(
+    file_name = c("ENCFF338WAN", "ENCFF484GLG", "ENCFF624PWP", "ENCFF253XRU",
+                 "ENCFF402FVH", "ENCFF355CVD", "ENCFF649AAK", "ENCFF491GKL"),
+    donor = c("Donor_A", "Donor_B", "Donor_A", "Donor_B", "Donor_A", "Donor_B", "Donor_A", "Donor_B"),
+    tissue = c("Stomach", "Stomach", "Spleen", "Spleen", "Lung", "Lung", "Colon", "Colon")
+) %>% 
+  mutate(
+    file_path = file.path(dir_path, "rnaseq", paste0(file_name, ".tsv")),
+    sample_label = paste(file_name)
+    ) %>% 
+  as.data.frame()
+  
+rownames(sample_metadata) <- sample_metadata$sample_label
+
+print(sample_metadata)
+```
+
+Counts specifications from here: https://www.encodeproject.org/data-standards/rna-seq/small-rnas/ 
+I'll be using the unstranded counts as the raw counts for normalization
+```{r}
+library(readr)
+
+# function to read in files and drop the columns 
+read_and_process_counts <- function(file_path, file_name, donor, tissue) {
+    read_tsv(file_path, col_names = c("gene_id", "unstranded_counts", "read1_stranded_counts", "read2_stranded_counts")) %>%
+        select(gene_id, unstranded_counts) %>%
+        filter(!gene_id %in% c("N_unmapped", "N_multimapping", "N_noFeature", "N_ambiguous")) %>%
+        # dplyr::rename(!!paste(file_name, donor, tissue, sep = "_") := unstranded_counts)
+    dplyr::rename(!!paste(file_name) := unstranded_counts)
+}
+
+# call the function for the multiple samples
+quantification_list <- pmap(
+    list(sample_metadata$file_path, sample_metadata$file_name, sample_metadata$donor, sample_metadata$tissue),
+    read_and_process_counts
+)
+
+quantification_df <- purrr::reduce(quantification_list, full_join, by = "gene_id")
+
+head(quantification_df)
+```
+
+```{r}
+count_matrix <- quantification_df %>%
+    column_to_rownames(var = "gene_id") %>%
+    as.matrix()
+
+dim(count_matrix)
+
+```
+
+```{r}
+library(DESeq2)
+
+count_matrix <- round(count_matrix)
+
+# normalize via deseq2 - just account for technical variation and tissue, since i don't want to bias the normalization based on suspicious donor labels
+dds <- DESeqDataSetFromMatrix(
+    countData = count_matrix,
+    colData = sample_metadata,
+    # design = ~ 1
+    design = ~ tissue
+)
+
+# filter low counts overall
+smallestGroupSize <- 3
+keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+dds <- dds[keep,]
+
+vsd <- vst(dds, blind=TRUE) # for no bias in design
+vsd_mat <- assay(vsd)
+dim(vsd_mat)
+```
+
+```{r}
+pca <- prcomp(t(vsd_mat), scale. = TRUE)
+
+percentVar <- pca$sdev^2 / sum(pca$sdev^2) * 100
+
+#
+pca_df <- as.data.frame(pca$x) %>%
+    rownames_to_column(var = "sample") %>%
+    left_join(sample_metadata, by = c("sample" = "sample_label"))
+
+# plot with tissue and donor 
+ggplot(pca_df, aes(x = PC1, y = PC2, color = tissue, shape = donor)) +
+    geom_point(size=4) +
+    geom_text_repel(aes(label=sample), size=3, max.overlaps = 10) +
+    theme_minimal() +
+    labs(title = "PCA of RNA-seq Samples based Tissue and Donor",
+         x = paste0("PC1: ", round(percentVar[1], 1), "% variance"),
+         y = paste0("PC2: ", round(percentVar[2], 1), "% variance")) +
+    theme(plot.title = element_text(hjust = 0.5))
+```
+
+In the PCA plot, we see an interesting trend: samples from Donor A tend to cluster higher along PC2 than those from Donor B across most tissues—like the stomach, lung, and colon,  hints at a stable, donor-specific expression pattern across these tissues. However, the spleen samples break this pattern; Donor B’s spleen sample actually clusters higher on PC2 than Donor A’s, flipping the usual trend. This unexpected result raises a question—there might be a labeling issue with the spleen samples, given the deviation from the expected donor-specific clustering. PC1 is likely tissue-specific clustering and PC2 donor-specific.
+
+```{r}
+library(pheatmap)
+
+# get correlation as heatmap
+cor_matrix <- cor(vsd_mat)
+
+rownames(sample_metadata) <- NULL
+
+# correlation 
+annotation_col <- sample_metadata %>%
+    column_to_rownames(var = "sample_label") %>% 
+    select(donor, tissue)  
+
+pheatmap(cor_matrix,
+         annotation_col = annotation_col,
+         main = "Sample Correlation Heatmap",
+         display_numbers = TRUE,
+         fontsize_number = 8,
+         clustering_distance_rows = "correlation",
+         clustering_distance_cols = "correlation",
+         clustering_method = "average")
+```
+
+These correlation values are relatively similar across all tissues. Interestingly, the correlation between the spleen and colon samples from Donor A and Donor B is slightly high—mirroring (0.85) the kind of correlation pattern we’d expect to see between tissues from the same donor rather than across donors. On top of that, these samples show lower correlations with other tissues from their labeled donor, hinting that they might actually belong to the opposite donor. Given the PCA observations, spleen can be the suspicious ones but it's difficult to say.
+
+```{r}
+hc <- hclust(as.dist(1 - cor_matrix), method = "average") # inconclusive
+
+plot(hc, main = "Hierarchical Clustering of RNA-seq Samples", xlab = "", sub = "", labels = rownames(cor_matrix), cex = 0.8)
+```
+
+As expected, samples predominantly clustered based on tissue type, indicating that tissue-specific expression profiles are the main drivers of variation. 
+
+```{r}
+correlation_df <- as.table(cor_matrix) %>% as.data.frame()
+colnames(correlation_df) <- c("Sample1", "Sample2", "Correlation")
+
+correlation_df <- correlation_df %>%
+  left_join(sample_metadata %>% select(sample_label, donor, tissue), by = c("Sample1" = "sample_label")) %>%
+  left_join(sample_metadata %>% select(sample_label, donor, tissue), by = c("Sample2" = "sample_label"), suffix = c("_1", "_2")) 
+
+# correlations between different donors (cross-donor, same-tissue)
+cross_donor_correlations <- correlation_df %>%
+  rowwise() %>%
+  mutate(
+    Sample1 = ifelse(donor_1 == "Donor_B", Sample2, Sample1),
+    Sample2 = ifelse(donor_1 == "Donor_B", Sample1, Sample2),
+    donor_1 = ifelse(donor_1 == "Donor_B", donor_2, donor_1),
+    donor_2 = ifelse(donor_1 == "Donor_B", donor_1, donor_2),
+    tissue_1 = ifelse(donor_1 == "Donor_B", tissue_2, tissue_1),
+    tissue_2 = ifelse(donor_1 == "Donor_B", tissue_1, tissue_2)
+  ) %>%
+  ungroup() %>%
+  filter(donor_1 != donor_2 & tissue_1 == tissue_2) %>%
+  distinct(Sample1, Sample2, .keep_all = TRUE)
+
+print("Cross-donor correlations within the same tissue:")
+print(cross_donor_correlations)
+```
+```{r}
+# correlations between different tissues within same donor (within-donor, cross-tissue)
+within_donor_correlations <- correlation_df %>%
+  filter(donor_1 == donor_2 & tissue_1 != tissue_2) %>%
+  rowwise() %>%
+  mutate(
+    tissue_pair = paste(sort(c(tissue_1, tissue_2)), collapse = "_")
+  ) %>%
+  ungroup() %>%
+  distinct(donor_1, tissue_pair, .keep_all = TRUE) %>%
+  arrange(donor_1, donor_2) %>% 
+  select(-tissue_pair)
+
+print("Within-donor correlations across different tissues:")
+print(within_donor_correlations)
+```
+```{r}
+cross_donor_avg <- cross_donor_correlations %>%
+  group_by(tissue_1) %>%
+  summarise(avg_cross_donor_correlation = mean(Correlation))
+
+cat("Average cross-donor correlations within the same tissue:")
+cat(capture.output(glimpse(cross_donor_avg)), sep = "\n")
+```
+
+```{r}
+within_donor_avg <- within_donor_correlations %>%
+  group_by(donor_1) %>%
+  summarise(avg_within_donor_correlation = mean(Correlation))
+
+cat("Average within-donor correlations across different tissues:")
+cat(capture.output(glimpse(within_donor_avg)), sep = "\n")
+```
+Spleen's cross-donor correlation (0.84) is higher than other tissues and even exceeds the within-donor, cross-tissue correlations. Typically expect cross-donor correlations within the same tissue to be lower than within-donor correlations across tissues due to donor-specific gene expression differences. It's likely that the spleen samples are suspicious sample swaps, but a more robust comparison would be use the BAM files for the spleen samples and compare with other samples like via Picard's [CrosscheckFingerprints tools](https://gatk.broadinstitute.org/hc/en-us/articles/360037594711-CrosscheckFingerprints-Picard#--HAPLOTYPE_MAP ) (couldn't verify due to memory limitations within my system) .
+
+```{r}
+sessionInfo()
+```
+
